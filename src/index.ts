@@ -1,8 +1,10 @@
 import type { Bid, JobBundle, RankedBid, Records } from "./types.ts";
-import { isEligible, isTested, hasRepo, scoreBid } from "./score.ts";
+import { isEligible, isTested, hasRepo, scoreBid, effectiveTier } from "./score.ts";
+import { resolveConfig, maxScore, type RankConfig, type RankConfigInput } from "./config.ts";
 
 export * from "./types.ts";
 export * from "./score.ts";
+export * from "./config.ts";
 
 export class RankError extends Error {}
 
@@ -13,8 +15,12 @@ const cmp = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
  * Sort key, lexicographic: eligible first, then tested before untested, then score desc, then bid_id asc.
  * The tested gate comes before the score, so an untested bid can never outrank a tested one
  * through a lower price (or any other score term).
+ *
+ * The optional fourth argument overrides weights and the tier scale (see RankConfig); omitted fields
+ * keep the documented defaults, so rankBids(bundle, bids, records) is the spec call.
  */
-export function rankBids(bundle: JobBundle, bids: readonly Bid[], records: Records = {}): RankedBid[] {
+export function rankBids(bundle: JobBundle, bids: readonly Bid[], records: Records = {}, config?: RankConfigInput): RankedBid[] {
+  const cfg = resolveConfig(config);
   if (!Number.isFinite(bundle.ceiling_usdc) || bundle.ceiling_usdc <= 0) throw new RankError("ceiling_usdc must be a positive number");
   const ids = new Set<string>();
   for (const b of bids) {
@@ -24,9 +30,9 @@ export function rankBids(bundle: JobBundle, bids: readonly Bid[], records: Recor
   }
 
   const rows = bids.map((bid) => {
-    const elig = isEligible(bid, bundle);
+    const elig = isEligible(bid, bundle, cfg.minApproachChars);
     const tested = isTested(bid.approach_md);
-    const { parts, covered } = scoreBid(bid, bundle, records[bid.agent_id]);
+    const { parts, covered } = scoreBid(bid, bundle, records[bid.agent_id], cfg);
     const score = elig.ok ? parts.price + parts.approach + parts.record + parts.tier : 0;
     return { bid, elig, tested, parts, covered, score };
   });
@@ -46,7 +52,7 @@ export function rankBids(bundle: JobBundle, bids: readonly Bid[], records: Recor
     eligible: r.elig.ok,
     tested: r.tested,
     parts: r.parts,
-    reason: explain(r, bundle, records),
+    reason: explain(r, bundle, records, cfg),
   }));
 }
 
@@ -54,16 +60,17 @@ function explain(
   r: { bid: Bid; elig: { ok: boolean; why?: string }; tested: boolean; parts: { price: number; approach: number; record: number; tier: number }; covered: number; score: number },
   bundle: JobBundle,
   records: Records,
+  cfg: RankConfig,
 ): string {
   if (!r.elig.ok) return `Bid ${r.bid.bid_id} is ineligible and ranked last because ${r.elig.why}.`;
   const rec = records[r.bid.agent_id];
   const recText = rec ? `a record of ${rec.accepted} accepted and ${rec.rejected} rejected deliveries` : "no delivery record, so it is scored as unproven";
   const n = bundle.interfaces?.length ?? 0;
   return [
-    `Bid ${r.bid.bid_id} scores ${r.score} of 100.`,
+    `Bid ${r.bid.bid_id} scores ${r.score} of ${maxScore(cfg)}.`,
     `Price ${r.bid.price_usdc} USDC against a ${bundle.ceiling_usdc} USDC ceiling earns ${r.parts.price} points.`,
     `The approach ${r.tested ? "names tests" : "names no tests, so it ranks below every tested bid"}, ${hasRepo(r.bid.approach_md) ? "links a public repo" : "links no public repo"}` +
       (n ? ` and covers ${r.covered} of ${n} required interfaces` : "") + `, for ${r.parts.approach} points.`,
-    `The agent has ${recText} (${r.parts.record} points) and Cerberus tier ${r.parts.tier / 5} (${r.parts.tier} points).`,
+    `The agent has ${recText} (${r.parts.record} points) and Cerberus tier ${effectiveTier(r.bid.cerberus_tier, cfg.tier)} (${r.parts.tier} points).`,
   ].join(" ");
 }

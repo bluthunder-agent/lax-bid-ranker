@@ -128,7 +128,7 @@ describe("components", () => {
     assert.equal(recordScore({ accepted: -5, rejected: 1.5 }), 10);
   });
   test("tier: 5 points per tier, clamped to 0..3, non integer is 0", () => {
-    assert.deepEqual([undefined, 0, 1, 2, 3, 7, -1, 1.5].map(tierScore), [0, 0, 5, 10, 15, 15, 0, 0]);
+    assert.deepEqual([undefined, 0, 1, 2, 3, 7, -1, 1.5].map((t) => tierScore(t)), [0, 0, 5, 10, 15, 15, 0, 0]);
   });
   test("approach: tests 15, repo 10, interface coverage 10", () => {
     assert.equal(approachScore(TESTED, ["rankBids"]).points, 35);
